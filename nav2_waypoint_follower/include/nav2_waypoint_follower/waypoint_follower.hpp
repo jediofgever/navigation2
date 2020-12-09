@@ -19,12 +19,23 @@
 #include <string>
 #include <vector>
 
+#include "rclcpp_action/rclcpp_action.hpp"
+#include "pluginlib/class_loader.hpp"
+#include "pluginlib/class_list_macros.hpp"
+#include "sensor_msgs/msg/nav_sat_fix.hpp"
+
 #include "nav2_util/lifecycle_node.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "nav2_msgs/action/follow_waypoints.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "nav2_util/simple_action_server.hpp"
-#include "rclcpp_action/rclcpp_action.hpp"
+#include "nav2_util/node_utils.hpp"
+#include "nav2_msgs/action/follow_gps_waypoints.hpp"
+#include "nav2_util/service_client.hpp"
+#include "nav2_core/waypoint_task_executor.hpp"
+
+#include "robot_localization/srv/from_ll.hpp"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.h"
 
 namespace nav2_waypoint_follower
 {
@@ -49,6 +60,10 @@ public:
   using ClientT = nav2_msgs::action::NavigateToPose;
   using ActionServer = nav2_util::SimpleActionServer<ActionT>;
   using ActionClient = rclcpp_action::Client<ClientT>;
+
+  // Shorten the types for GPS waypoint following
+  using ActionTGPS = nav2_msgs::action::FollowGPSWaypoints;
+  using ActionServerGPS = nav2_util::SimpleActionServer<ActionTGPS>;
 
   /**
    * @brief A constructor for nav2_waypoint_follower::WaypointFollower class
@@ -94,32 +109,93 @@ protected:
   nav2_util::CallbackReturn on_shutdown(const rclcpp_lifecycle::State & state) override;
 
   /**
-   * @brief Action server callbacks
+   * @brief Templated function to perform internal logic behind waypoint following,
+   *        Both GPS and non GPS waypoint following callbacks makes use of this function when a client asked to do so.
+   *        Callbacks fills in appropriate types for the tempelated types, see followWaypointCallback funtions for details.
+   *
+   * @tparam T action_server
+   * @tparam V feedback
+   * @tparam Z result
+   * @param action_server
+   * @param poses
+   * @param feedback
+   * @param result
    */
-  void followWaypoints();
+  template<typename T, typename V, typename Z>
+  void followWaypointsLogic(
+    const T & action_server,
+    const V & feedback,
+    const Z & result);
 
   /**
-   * @brief Action client result callback
-   * @param result Result of action server updated asynchronously
+   * @brief Action server callbacks
    */
-  void resultCallback(const rclcpp_action::ClientGoalHandle<ClientT>::WrappedResult & result);
+  void followWaypointsCallback();
+
+  /**
+   * @brief send robot through each of GPS
+   *        point , which are converted to map frame first then using a client to
+   *        `FollowWaypoints` action.
+   *
+   * @param waypoints, acquired from action client
+   */
+  void followGPSWaypointsCallback();
+
+  /**
+ * @brief Action client result callback
+ * @param result Result of action server updated asynchronously
+ */
+  template<typename T>
+  void resultCallback(const T & result);
 
   /**
    * @brief Action client goal response callback
-   * @param future Shared future to goalhandle
+   * @param goal Response of action server updated asynchronously
    */
-  void goalResponseCallback(
-    std::shared_future<rclcpp_action::ClientGoalHandle<ClientT>::SharedPtr> future);
+  template<typename T>
+  void goalResponseCallback(const T & goal);
 
-  // Our action server
+/**
+ * @brief given some gps_waypoints, converts them to map frame using robot_localization's service `fromLL`.
+ *        Constructs a vector of stamped poses in map frame and returns them.
+ *
+ * @param gps_waypoints
+ * @param parent_node
+ * @param fromll_client
+ * @return std::vector<geometry_msgs::msg::PoseStamped>
+ */
+  static std::vector<geometry_msgs::msg::PoseStamped> convertGPSWaypointstoPosesinMap(
+    const std::vector<sensor_msgs::msg::NavSatFix> & gps_waypoints,
+    const rclcpp_lifecycle::LifecycleNode::SharedPtr & parent_node,
+    const
+    std::unique_ptr<nav2_util::ServiceClient<robot_localization::srv::FromLL>> & fromll_client);
+
+  template<typename T>
+  std::vector<geometry_msgs::msg::PoseStamped> getUpdatedPoses(const T & action_server);
+
+  // Common vars used for both GPS and cartesian point following
+  rclcpp::Node::SharedPtr client_node_;
+  std::vector<int> failed_ids_;
+  int loop_rate_;
+  bool stop_on_failure_;
+
+  // Our action server for waypoint following
   std::unique_ptr<ActionServer> action_server_;
   ActionClient::SharedPtr nav_to_pose_client_;
-  rclcpp::Node::SharedPtr client_node_;
   std::shared_future<rclcpp_action::ClientGoalHandle<ClientT>::SharedPtr> future_goal_handle_;
-  bool stop_on_failure_;
   ActionStatus current_goal_status_;
-  int loop_rate_;
-  std::vector<int> failed_ids_;
+
+  // Our action server for GPS waypoint following
+  std::unique_ptr<ActionServerGPS> gps_action_server_;
+  std::unique_ptr<nav2_util::ServiceClient<robot_localization::srv::FromLL>> from_ll_to_map_client_;
+
+  // Task Execution At Waypoint Plugin
+  pluginlib::ClassLoader<nav2_core::WaypointTaskExecutor>
+  waypoint_task_executor_loader_;
+  pluginlib::UniquePtr<nav2_core::WaypointTaskExecutor>
+  waypoint_task_executor_;
+  std::string waypoint_task_executor_id_;
+  std::string waypoint_task_executor_type_;
 };
 
 }  // namespace nav2_waypoint_follower
