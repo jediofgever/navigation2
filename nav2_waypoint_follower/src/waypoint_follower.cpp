@@ -234,11 +234,11 @@ void WaypointFollower::followWaypointsLogic(
         &WaypointFollower::resultCallback<rclcpp_action::ClientGoalHandle<ClientT>::WrappedResult>,
         this,
         std::placeholders::_1);
-      /*send_goal_options.goal_response_callback =
+      send_goal_options.goal_response_callback =
         std::bind(
         &WaypointFollower::goalResponseCallback
-        <rclcpp_action::ClientGoalHandle<ClientT>::SharedPtr>, this,
-        std::placeholders::_1);*/
+        <std::shared_future<rclcpp_action::ClientGoalHandle<ClientT>::SharedPtr>>, this,
+        std::placeholders::_1);
 
       future_goal_handle_ =
         nav_to_pose_client_->async_send_goal(client_goal, send_goal_options);
@@ -366,7 +366,8 @@ template<typename T>
 void WaypointFollower::goalResponseCallback(
   const T & goal)
 {
-  if (!goal) {
+  auto goal_handle = goal.get();
+  if (!goal_handle) {
     RCLCPP_ERROR(
       get_logger(),
       "navigate_to_pose action client failed to send goal to server.");
